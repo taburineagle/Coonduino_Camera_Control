@@ -43,39 +43,26 @@ byte LANC_Frame[8];
 const int showDebug = 1; // set this to 1 to show debug messages
 
 int isRecording = 0; // set to not recording to initialize the variable
-int isIgnoringSensors = 0;
-
-int useCanonMode = 0 ; // set to 1 to use the Canon LANC commands instead of the Sony ones
-int recordDelay = 3000; // delay between turning camera on and hitting RECORD
+int recordDelay = 4500; // delay between turning camera on and hitting RECORD
 
 int operationTimeout = 12500 ; // operation timeout before quitting out of loops that may hang
 
 volatile int sensorDetected = 0; // the RF sensor changes this when it detects an event from an X10 source
 
-unsigned long REC_TO_CTR = 30000; // timer before stopping record
-unsigned long STBY_TO_CTR = 17500; // after record timer before shutting camera down
-
-// CANON LANC BITS TO SEND TO LANC (for some reason, the Sony procedure isn't timed correctly... yet.)
-boolean REC[] = {0,0,0,1,1,0,0,0,   0,0,1,1,0,0,1,1}; //18 33
-boolean POWER_OFF[] = {0,0,0,1,1,0,0,0,   0,1,0,1,1,1,1,0}; //18 5E
+unsigned long REC_TO_CTR = 25000; // timer before stopping record
+unsigned long STBY_TO_CTR = 22050; // after record timer before shutting camera down
 
 void processRfCommand(char house, byte unit, byte command, bool isRepeat){
-	if (!sensorDetected) {
-		if (isIgnoringSensors == 0) { // if we aren't ignoring sensor input
-			sensorDetected = 1;
+  if (!sensorDetected) {
+    sensorDetected = 1;
 
-			if (showDebug) {
-				Serial.print("RF Signal Detected! -> ");
-				Serial.print(house);
-				Serial.print("-");
-				Serial.println(unit, DEC);
-			}
-		}
-		else { // if we are ignoring sensor input
-			if (showDebug) Serial.println("Sensor detected, but ignoring sensors for the time being!");
-			isIgnoringSensors++;
-		}
-	}
+    if (showDebug) {
+      Serial.print("RF Signal Detected! -> ");
+      Serial.print(house);
+      Serial.print("-");
+      Serial.println(unit, DEC);
+    }
+  }
 }
 
 X10rf x10rf = X10rf(0, 2, processRfCommand); // set up the above function to trigger on X10 events
@@ -83,12 +70,8 @@ X10rf x10rf = X10rf(0, 2, processRfCommand); // set up the above function to tri
 void setup() {
   if (showDebug) {
     Serial.begin(9600); // if you have the system set to show debug messages, start the Serial connection
-    Serial.println("This is the COMBINED code base");
-    Serial.println("Last Modified: 12/27/17 - B -");
-	Serial.println("Added routine to block sensor inputs for 30 seconds");
-	Serial.println("after event is captured to cut down on false extras...");
-	Serial.println("...hopefully!");
-	Serial.println("-----------------------------------------------");
+    Serial.println("This is the SONY code base");
+    Serial.println("Last Modified: 11/12/17 - improved _nextByte()");
     Serial.print("The record delay is set to ");
     Serial.println(REC_TO_CTR);
     Serial.print("The standby delay is set to ");
@@ -170,7 +153,7 @@ void _nextFrame(){
 	startTimer = millis(); // re-start the anti-hang timer
 
 	//Now wait till we get the first start bit (low)
-	while (digitalRead(_lancPin)==HIGH) {
+	while (digitalRead(_lancPin)==HIGH)
 		if ((millis() - startTimer) < operationTimeout) {
 			delayMicroseconds(20);
 		}
@@ -178,7 +161,6 @@ void _nextFrame(){
 			if (showDebug) Serial.println("_nextFrame() hung waiting for start bit");
 			break;
 		}
-	}
 }
 
 void _nextByte(){
@@ -250,7 +232,7 @@ void loop() {
 		delay(recordDelay); // wait recordDelay (set at the top of the script) seconds before sending LANC commands to camera
 
 		if (showDebug) Serial.println("Hitting Record");
-		toggleRec(); // tell camera to start recording
+		toggleRec(1); // tell camera to start recording
 		verifyRec(1); // verify that the camera is recording
 
 		sensorDetected = 0; // set sensorDetected to 0 to clear the notification
@@ -259,19 +241,13 @@ void loop() {
 
 		timeout(); // do the REC PAUSE countdown timer
 
-
 		if (lightBoard) digitalWrite(lightPin, 0); // turn the light off if we have the Video Light II board enabled
 
 		for (int i = 1 ; i < 10; i++){
-			if (!useCanonMode) {
-				update(0x18, 0x5E, 0); // turn the camera off
-			}
-			else {
-				lancCommandCanon(POWER_OFF);
-			}
+			update(0x18, 0x5E, 0); // turn the camera off
 		}
 
-		delay(3000);
+		delay(2000); // wait 2 seconds before accepting another event
 
 		isRecording = 0 ; // just in case isRecording is set wrong, restore it to "non-recording" state after the process ends
 	}
@@ -280,109 +256,38 @@ void loop() {
 	delay(1000);
 }
 
-void toggleRec(){
-	if (!useCanonMode) {
-		update(0x18, 0x33, 1); // send the Sony command to REC to the camera
-	}
-	else {
-		lancCommandCanon(REC); // send the Canon command to REC to the camera
-		delay(800);
-		update(0x00, 0x00, 1); // send the Sony command to REC to the camera
-		delay(300);
-	}
+void toggleRec(int typeOfRecording){
+	update(0x18, 0x33, 1); // send REC toggle to the camera
 }
 
 void verifyRec(int typeOfRecording) {
-	int failedTries = 0 ;
-
-	while(1) {
-		if (LANC_Frame[4] == 0x04 || LANC_Frame[4] == 0x14 ) {
-			if (typeOfRecording == 1) {
-				if (LANC_Frame[4] == 0x04) {
-					Serial.println("We're supposed to be recording and the camera says we are");
-					isRecording = 1;
-					break;
-				}
-			else {
-				Serial.println("We're supposed to be recording and we aren't");
-				toggleRec();
-				failedTries++;
-			}
-		}
-		else if (typeOfRecording == 0) {
-			if (LANC_Frame[4] == 0x14) {
-				Serial.println("We're supposed to be in STBY and the camera says we are");
-				isRecording = 0;
-				break ;
-			}
-			else {
-				Serial.println("We're supposed to be in STBY and we aren't");
-				toggleRec();
-				failedTries++;
-			}
-		}
-	}
-	else { // if the LANC stream doesn't contain 04 or 14 in hex, then refresh the stream and try again!
-		update(0x00, 0x00, 1); // send the Sony command to REC to the camera
-		delay(500);
-	}
-
-	if (failedTries > 10) {
-		if (!useCanonMode) {
-			useCanonMode = 1;
-			if (showDebug) Serial.println("Switching to Canon compatibility mode for this session");
-		}
-	}
+  while(1) {
+    if (LANC_Frame[4] == 0x04 || LANC_Frame[4] == 0x14 ) {
+      if (typeOfRecording == 1) {
+        if (LANC_Frame[4] == 0x04) {
+          Serial.println("We're supposed to be recording and the camera says we are");
+          isRecording = 1;
+          break;
+        }
+        else {
+          Serial.println("We're supposed to be recording and we aren't");
+          toggleRec(typeOfRecording);
+        }
+      }
+      else if (typeOfRecording == 0) {
+        if (LANC_Frame[4] == 0x14) {
+          Serial.println("We're supposed to be in STBY and the camera says we are");
+          isRecording = 0;
+          break ;
+        }
+        else {
+          Serial.println("We're supposed to be in STBY and we aren't");
+          toggleRec(typeOfRecording);
+        }
+      }
+    }
   }
 }
-
-void lancCommandCanon(boolean lancBit[]) {
-	for (int cmdTotalRepeatCount = 0 ; cmdTotalRepeatCount < 4; cmdTotalRepeatCount++) {
-		//_nextFrame();
-		while (pulseIn(_lancPin, 1) < 5000) { }
-
-		//0 after long pause means the START bit of Byte 0 is here
-		delayMicroseconds(bitWidth - 8);  //wait START bit duration
-
-		// WRITE FIRST PART OF COMMAND
-		for (int i=7; i>-1; i--) { //Note that the command bits have to be put out in reverse order with the least significant, right-most bit (bit 0) first
-			digitalWrite(_cmdPin, lancBit[i]);  //Write bits.
-			delayMicroseconds(bitWidth - 8);
-		}
-
-		//Byte 0 is written now put LANC line back to +5V
-		digitalWrite(_cmdPin, 0);
-		delayMicroseconds(10); //make sure to be in the stop bit before byte 1
-
-		//_nextByte();
-		while (digitalRead(_lancPin)) { }
-
-		//0V after the previous stop bit means the START bit of Byte 1 is here
-		delayMicroseconds(bitWidth - 8);  //wait START bit duration
-
-		// WRITE SECOND PART OF COMMAND
-		for (int i=15; i>7; i--) {
-			digitalWrite(_cmdPin,lancBit[i]);  //Write bits
-			delayMicroseconds(bitWidth - 8);
-		}
-
-		digitalWrite(_cmdPin, 0); //Byte 1 is written now put LANC line back to +5V
-		cmdTotalRepeatCount++;  //increase repeat count by 1
-	}
-}
-
-/*
-void ignoreSensors() {
-	unsigned long currentTime = millis();
-	int waitTime = 25000;
-
-	while((currentTime + waitTime) > millis()) {
-		// wait until the time expires before checking for another event
-	}
-
-	isIgnoringSensors = 0;
-}
-*/
 
 void timeout() {
   unsigned long TO_CTR; // beginning of timeout counter
@@ -402,8 +307,7 @@ void timeout() {
     }
     else {
       if (isRecording) {
-		delay(500);
-        toggleRec();
+        toggleRec(0);
         verifyRec(0);
       }
 
@@ -414,17 +318,10 @@ void timeout() {
       }
     }
 
-	if ((millis() - TO_CTR) > 45000) {
-		if (isIgnoringSensors != -1) {
-			isIgnoringSensors = -1;
-			if (showDebug) Serial.println("Ignoring the next sensor event");
-		}
-	}
-
     if (sensorDetected) {
       if ((currentTime - TO_CTR) > REC_TO_CTR){
         if (showDebug) Serial.println("Signal! / STBY -> REC / Start over"); // we're in STBY mode, so start the recording again and reset the timer
-        toggleRec();
+        toggleRec(1);
         verifyRec(1);
       }
       else {
@@ -435,6 +332,6 @@ void timeout() {
       sensorDetected = 0; // set sensorDetected to 0 to clear the notification
     }
 
-    //delay(500);
+    delay(500);
   }
 }
